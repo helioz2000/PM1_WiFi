@@ -17,6 +17,8 @@ int wifi_rx_size = 0;
 uint8_t serial_rx_buf[SERIAL_BUF_SIZE];
 int serial_rx_size = 0;
 
+#define SERIAL_BAUD 115200
+
 #define SERIAL_EOT 50       // [ms] time after last RX where we consider RX complete
 uint32_t serial_EOT_timeout;
 
@@ -28,18 +30,23 @@ char pass[] = "";   // your network password
 */
 
 // USE serial is on GPIO1 (TX) and GPIO3 (RX)
-const char SERTX = D1;   // D1 (GPIO 5)
-const char SERRX = D2;   // D2 (GPIO 4)
+const byte TX_pin = 5;   // D1 (GPIO 5)
+const byte RX_pin = 4;   // D2 (GPIO 4)
 
-SoftwareSerial data_serial(SERTX, SERRX); 
+SoftwareSerial data_serial(RX_pin, TX_pin); 
 
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(74880);
   Serial.println();
-  //data_serial.begin(115200);
+  // Pin modes for soft serial
+  pinMode(RX_pin, INPUT);
+  pinMode(TX_pin, OUTPUT);
+  // Start soft serial
+  data_serial.begin(SERIAL_BAUD);
   
   Serial.print("Started");
+  
   //Serial.setDebugOutput(true);
   delay(10);
   esp_info();
@@ -56,6 +63,8 @@ void setup() {
   server.begin();   // Start server
   Serial.print("Connected to WiFi. My IP address: ");
   Serial.println(WiFi.localIP());
+  data_serial.print("IP=");
+  data_serial.println(WiFi.localIP());
 }
 
 void loop() {
@@ -86,6 +95,7 @@ void loop() {
       if (nBytes){
         Serial.print(nBytes);
         Serial.println(" Bytes received on WiFi");
+        //data_serial.println(" Bytes received on WiFi");
         for (i=0; i<nBytes; i++) {
           wifi_rx_buf[wifi_rx_size++] = client.read();
         }
