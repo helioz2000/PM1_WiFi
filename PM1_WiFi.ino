@@ -11,7 +11,7 @@ WiFiClient client, client2;
 
 #define WIFI_BUF_SIZE 128
 uint8_t wifi_rx_buf[WIFI_BUF_SIZE];
-int wifi_buf_size = 0;
+int wifi_rx_size = 0;
 
 #define SERIAL_BUF_SIZE 128
 uint8_t serial_rx_buf[SERIAL_BUF_SIZE];
@@ -60,7 +60,7 @@ void setup() {
 
 void loop() {
   int nBytes, i;
-  char c;
+  uint8_t c;
   // listen for incoming clients
   if (!connected) {
     client = server.available();
@@ -81,29 +81,33 @@ void loop() {
       client2.stop();   // disconnect
     }
     if (client.connected()) {
-      // do we have data from client ?
+      // do we have data from WiFi client ?
       nBytes = client.available();
       if (nBytes){
         Serial.print(nBytes);
-        Serial.println(" Bytes available");
-//        for (i=0; i<nBytes; i++) {
-
-        wifi_rx_size = client.readBytes(&wifi_rx_buf, nBytes);
-        data_serial.write(&wifi_rx_buf, wifi_rx_size);
-  //      }
+        Serial.println(" Bytes received on WiFi");
+        for (i=0; i<nBytes; i++) {
+          wifi_rx_buf[wifi_rx_size++] = client.read();
+        }
+        for (i=0; i<nBytes; i++) { 
+          data_serial.write(wifi_rx_buf[i]);
+        }
+        wifi_rx_size = 0;
       }
 
       // receive and accumulate serial data 
       while (data_serial.available()) {
-        serial_rx_buffer[serial_rx_size] = data_serial.read();
+        serial_rx_buf[serial_rx_size] = data_serial.read();
         serial_rx_size++;
         serial_EOT_timeout = millis() + SERIAL_EOT;
       }
 
       // write serial data to WiFi client after end of transmission
       if (serial_EOT_timeout > millis()) {
+        Serial.print(serial_rx_size);
+        Serial.println(" Bytes received on Serial");
         serial_EOT_timeout = 0;
-        client.write_P((const char *) serial_rx_buffer, serial_rx_size);
+        client.write_P((const char *) &serial_rx_buf, serial_rx_size);
         serial_rx_size = 0;
       }
 
