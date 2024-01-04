@@ -9,7 +9,18 @@
 WiFiServer server(502);
 WiFiClient client, client2;
 
-bool connected = false;   // true during a client connection
+#define WIFI_BUF_SIZE 128
+uint8_t wifi_rx_buf[WIFI_BUF_SIZE];
+int wifi_buf_size = 0;
+
+#define SERIAL_BUF_SIZE 128
+uint8_t serial_rx_buf[SERIAL_BUF_SIZE];
+int serial_rx_size = 0;
+
+#define SERIAL_EOT 50       // [ms] time after last RX where we consider RX complete
+uint32_t serial_EOT_timeout;
+
+bool connected = false;   // true during a WiFi client connection
 
 /* SSID and Password defined in their own file
 char ssid[] = "";   //  your network SSID (name)
@@ -26,9 +37,9 @@ void setup() {
   // put your setup code here, to run once:
   Serial.begin(74880);
   Serial.println();
-  data_serial.begin(115200);
+  //data_serial.begin(115200);
   
-  //Serial.print("Started");
+  Serial.print("Started");
   //Serial.setDebugOutput(true);
   delay(10);
   esp_info();
@@ -70,29 +81,30 @@ void loop() {
       client2.stop();   // disconnect
     }
     if (client.connected()) {
+      // do we have data from client ?
       nBytes = client.available();
       if (nBytes){
         Serial.print(nBytes);
         Serial.println(" Bytes available");
-        for (i=0; i<nBytes; i++) {
-          c = client.read();
-          data_serial.write((uint8_t) c);
-          if (c >= ' ') {
-            Serial.print(c);
-          } else {
-            Serial.print("<");
-            Serial.print((uint8_t)c, HEX);
-            Serial.print(">");
-          }
-          
-        }
-        Serial.println();
+//        for (i=0; i<nBytes; i++) {
+
+        wifi_rx_size = client.readBytes(&wifi_rx_buf, nBytes);
+        data_serial.write(&wifi_rx_buf, wifi_rx_size);
+  //      }
       }
 
-      // write serial data to client
+      // receive and accumulate serial data 
       while (data_serial.available()) {
-        c = data_serial.read();
-        client.write(c);
+        serial_rx_buffer[serial_rx_size] = data_serial.read();
+        serial_rx_size++;
+        serial_EOT_timeout = millis() + SERIAL_EOT;
+      }
+
+      // write serial data to WiFi client after end of transmission
+      if (serial_EOT_timeout > millis()) {
+        serial_EOT_timeout = 0;
+        client.write_P((const char *) serial_rx_buffer, serial_rx_size);
+        serial_rx_size = 0;
       }
 
     } else {
