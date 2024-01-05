@@ -1,10 +1,21 @@
 /*
+ * WiFi to Serial bridge
+ * for use with Power Meter PM1
  * Board: LOLIN(WeMos) D1 R1
+ *
+ * Pins
+ * D1 Serial TX
+ * D2 Serial RX
+ * RST Board reset
  */
 
 #include <ESP8266WiFi.h>
 #include <SoftwareSerial.h>
 #include "Network.h"
+
+#define SERIAL_BAUD 115200
+#define SERIAL_EOT 10       // [ms] time after last RX where we consider RX complete
+uint32_t serial_EOT_timeout;
 
 WiFiServer server(502);
 WiFiClient client, client2;
@@ -16,11 +27,6 @@ int wifi_rx_size = 0;
 #define SERIAL_BUF_SIZE 128
 uint8_t serial_rx_buf[SERIAL_BUF_SIZE];
 int serial_rx_size = 0;
-
-#define SERIAL_BAUD 115200
-
-#define SERIAL_EOT 50       // [ms] time after last RX where we consider RX complete
-uint32_t serial_EOT_timeout;
 
 bool connected = false;   // true during a WiFi client connection
 
