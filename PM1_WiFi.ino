@@ -13,18 +13,18 @@
 #include <SoftwareSerial.h>
 #include "Network.h"
 
-#define SERIAL_BAUD 115200
+#define SERIAL_BAUD 57600
 #define SERIAL_EOT 10       // [ms] time after last RX where we consider RX complete
 uint32_t serial_EOT_timeout;
 
 WiFiServer server(502);
 WiFiClient client, client2;
 
-#define WIFI_BUF_SIZE 128
+#define WIFI_BUF_SIZE 256
 uint8_t wifi_rx_buf[WIFI_BUF_SIZE];
 int wifi_rx_size = 0;
 
-#define SERIAL_BUF_SIZE 128
+#define SERIAL_BUF_SIZE 256
 uint8_t serial_rx_buf[SERIAL_BUF_SIZE];
 int serial_rx_size = 0;
 
@@ -96,19 +96,21 @@ void loop() {
       client2.stop();   // disconnect
     }
     if (client.connected()) {
-      // do we have data from WiFi client ?
-      nBytes = client.available();
-      if (nBytes){
-        Serial.print(nBytes);
-        Serial.println(" Bytes received on WiFi");
-        //data_serial.println(" Bytes received on WiFi");
-        for (i=0; i<nBytes; i++) {
-          wifi_rx_buf[wifi_rx_size++] = client.read();
+      if (!serial_EOT_timeout) {  // ignore WiFi activity during serial RX
+        // do we have data from WiFi client ?
+        nBytes = client.available();
+        if (nBytes){
+          Serial.print(nBytes);
+          Serial.println(" Bytes received on WiFi");
+          //data_serial.println(" Bytes received on WiFi");
+          for (i=0; i<nBytes; i++) {
+            wifi_rx_buf[wifi_rx_size++] = client.read();
+          }
+          for (i=0; i<nBytes; i++) { 
+            data_serial.write(wifi_rx_buf[i]);
+          }
+          wifi_rx_size = 0;
         }
-        for (i=0; i<nBytes; i++) { 
-          data_serial.write(wifi_rx_buf[i]);
-        }
-        wifi_rx_size = 0;
       }
 
       // receive and accumulate serial data 
@@ -119,7 +121,7 @@ void loop() {
       }
 
       // write serial data to WiFi client after end of transmission
-      if (serial_EOT_timeout > millis()) {
+      if (serial_EOT_timeout && (millis() > serial_EOT_timeout)){
         Serial.print(serial_rx_size);
         Serial.println(" Bytes received on Serial");
         serial_EOT_timeout = 0;
@@ -132,7 +134,7 @@ void loop() {
       connected = false;
     }
   }
-  delay(5);   // RossW has experienced random board resets without this delay
+  delay(3);   // RossW has experienced random board resets without a 5ms delay
 }
 
 void esp_info() {
@@ -163,7 +165,6 @@ void mylog(const char *sFmt, ...)
   va_end(args);
   return;
 }
-
 
 /*
  * 2REM studio alert module
