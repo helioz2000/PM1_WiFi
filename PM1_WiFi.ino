@@ -13,7 +13,7 @@
 #include <SoftwareSerial.h>
 #include "Network.h"
 
-#define SERIAL_BAUD 57600
+#define SERIAL_BAUD 38400
 #define SERIAL_EOT 10       // [ms] time after last RX where we consider RX complete
 uint32_t serial_EOT_timeout;
 
