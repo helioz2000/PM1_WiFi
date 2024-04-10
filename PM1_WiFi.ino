@@ -3,6 +3,12 @@
  * for use with Power Meter PM1
  * Board: LOLIN(WeMos) D1 R1
  *
+ * Note: The data received on the serial port is expected to be a modbus response
+ * the modbus byte length is interrogated and compared against the actual number
+ * of bytes received on serial, if the number of bytes doesn't match, the modbus request
+ * received on WiFi is resent to the serial port with another response expected from PM1 
+ * Retries will occur until MAX_RETRY is reached.
+ *
  * Pins
  * D1 Serial TX
  * D2 Serial RX
@@ -23,6 +29,9 @@ WiFiClient client, client2;
 #define WIFI_BUF_SIZE 256
 uint8_t wifi_rx_buf[WIFI_BUF_SIZE];
 int wifi_rx_size = 0;
+int wifi_last_rx_size;
+int retry_attempts = 0;
+#define MAX_RETRY 2
 
 #define SERIAL_BUF_SIZE 256
 uint8_t serial_rx_buf[SERIAL_BUF_SIZE];
@@ -73,8 +82,16 @@ void setup() {
   data_serial.println(WiFi.localIP());
 }
 
+void retry() {
+  // resend wifi rx buffer
+  for (int i=0; i<wifi_last_rx_size; i++) { 
+    data_serial.write(wifi_rx_buf[i]);
+  }
+  retry_attempts++;
+}
+
 void loop() {
-  int nBytes, i;
+  int nBytes, i, len;
   uint8_t c;
   // listen for incoming clients
   if (!connected) {
@@ -109,6 +126,7 @@ void loop() {
           for (i=0; i<nBytes; i++) { 
             data_serial.write(wifi_rx_buf[i]);
           }
+          wifi_last_rx_size = wifi_rx_size;
           wifi_rx_size = 0;
         }
       }
@@ -125,7 +143,24 @@ void loop() {
         Serial.print(serial_rx_size);
         Serial.println(" Bytes received on Serial");
         serial_EOT_timeout = 0;
-        client.write_P((const char *) &serial_rx_buf, serial_rx_size);
+        // perform sanity check on rx buffer
+        len = serial_rx_buf[4] * 256 + serial_rx_buf[5] + 6;  // number of bytes we should have received
+        if (len == serial_rx_size) {      // correct number of bytes
+          client.write_P((const char *) &serial_rx_buf, serial_rx_size);  // write data to wifi client
+          retry_attempts = 0;
+        } else {                          // incorrect number of bytes
+          Serial.print("Error - expected ");
+          Serial.print(len);
+          Serial.print(" bytes, received ");
+          Serial.print(serial_rx_size);
+          Serial.println(" bytes");
+          if (retry_attempts < MAX_RETRY) {   // max retires reached?
+            Serial.println("Attempting retry, resending on serial port");
+            retry();
+          } else {        // max retires have been reached
+            retry_attempts = 0;   // reset attempts
+          }
+        }
         serial_rx_size = 0;
       }
 
