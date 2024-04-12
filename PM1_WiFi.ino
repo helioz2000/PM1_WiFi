@@ -8,7 +8,16 @@
  * of bytes received on serial, if the number of bytes doesn't match, the modbus request
  * received on WiFi is resent to the serial port with another response expected from PM1 
  * Retries will occur until MAX_RETRY is reached.
- *
+ * 
+ * Sequence:
+ * 1 - received modbus TCP packet by WiFi -> wifi_rx_buf[]
+ * 2 - convert TCP to RTU packet -> serial_tx_buf[]
+ * 3 - send RTU packet (serial_tx_buf) to interface
+ * 4 - received sRTU packet -> serial_rx_buf[]
+ * 5 - check RTU packet CRC, on CRC mismatch go back to 3
+ * 6 - convert RTU to TCP packet
+ * 7 - transmit TCP packet on WiFi
+ * 
  * Pins
  * D1 Serial TX
  * D2 Serial RX
@@ -28,14 +37,20 @@ WiFiClient client, client2;
 
 #define WIFI_BUF_SIZE 256
 uint8_t wifi_rx_buf[WIFI_BUF_SIZE];
+uint8_t wifi_tx_buf[WIFI_BUF_SIZE];
 int wifi_rx_size = 0;
-int wifi_last_rx_size;
+int wifi_tx_size = 0;
 int retry_attempts = 0;
 #define MAX_RETRY 2
 
 #define SERIAL_BUF_SIZE 256
 uint8_t serial_rx_buf[SERIAL_BUF_SIZE];
+uint8_t serial_tx_buf[SERIAL_BUF_SIZE];
 int serial_rx_size = 0;
+int serial_tx_size = 0;
+
+uint16_t transID;   // Modbus MBAP transaction ID
+uint16_t protoID;   // Modbus MBAP protocol ID
 
 bool connected = false;   // true during a WiFi client connection
 
@@ -84,10 +99,62 @@ void setup() {
 
 void retry() {
   // resend wifi rx buffer
-  for (int i=0; i<wifi_last_rx_size; i++) { 
-    data_serial.write(wifi_rx_buf[i]);
+  for (int i=0; i<serial_tx_size; i++) { 
+    data_serial.write(serial_tx_buf[i]);
   }
   retry_attempts++;
+}
+
+/*
+ * Convert the modbus TCP buffer to RTU buffer
+ * returns the number of bytes placed in rtu_buf
+ */
+int tcp_to_rtu(const uint8_t *tcp_buf, int tcp_len, uint8_t *rtu_buf, int rtu_max_len) {
+  int i, len;
+  uint16_t crc;
+  uint8_t *rtu_ptr = rtu_buf;
+
+  // store MBAP infor for reply
+  transID = tcp_buf[0]*256 + tcp_buf[1];
+  protoID = tcp_buf[2]*256 + tcp_buf[3];
+  //length = tcp_buf[4]*256 + tcp_buf[5];
+
+  // copy data into RTU buffer
+  for (i=6; i<tcp_len; i++) {
+    *rtu_ptr++ = tcp_buf[i];
+  }
+  // append CRC
+  crc = modbus_crc16(rtu_buf, tcp_len-6);
+  *rtu_ptr++ = (uint8_t) (crc >> 8);    // CRC hi
+  *rtu_ptr++ = (uint8_t) (crc & 0x00FF);// CRC lo
+  return tcp_len - 4;
+}
+
+/*
+ * Check modbus RTU buffer CRC and
+ * convert RTU buffer to TCP buffer
+ * returns the number of bytes placed in the TCP buffer or 0 on CRC mismatch
+ */
+int rtu_to_tcp(const uint8_t *rtu_buf, int rtu_len, uint8_t *tcp_buf, int tcp_max_len) {
+  int tcp_idx = 0;
+  uint16_t len = rtu_len - 2;
+  // CRC contained in RTU packet
+  uint16_t crc = rtu_buf[rtu_len-2] * 256 + rtu_buf[rtu_len-1];
+  // calculate CRC
+  uint16_t crc_calculated = modbus_crc16(rtu_buf, rtu_len-2);
+  // if CRC is incorrect abort here
+  if (crc != crc_calculated) { return 0; }
+  // CRC is OK proceed with TCP
+  tcp_buf[tcp_idx++] = transID >> 8;
+  tcp_buf[tcp_idx++] = transID & 0x00FF;
+  tcp_buf[tcp_idx++] = protoID >> 8;
+  tcp_buf[tcp_idx++] = protoID & 0x00FF;
+  tcp_buf[tcp_idx++] = len >> 8;
+  tcp_buf[tcp_idx++] = len & 0x00FF;
+  for (int i=0; i<rtu_len-2; i++) {
+    tcp_buf[tcp_idx++] = rtu_buf[i];
+  }
+  return tcp_idx;
 }
 
 void loop() {
@@ -120,13 +187,16 @@ void loop() {
           Serial.print(nBytes);
           Serial.println(" Bytes received on WiFi");
           //data_serial.println(" Bytes received on WiFi");
+          // read modbus TCP packet
           for (i=0; i<nBytes; i++) {
             wifi_rx_buf[wifi_rx_size++] = client.read();
           }
-          for (i=0; i<nBytes; i++) { 
-            data_serial.write(wifi_rx_buf[i]);
+          // convert to RTU packet
+          serial_tx_size = tcp_to_rtu(wifi_rx_buf, wifi_rx_size, serial_tx_buf ,SERIAL_BUF_SIZE);
+          // send RTU packet on serial interface
+          for (i=0; i<serial_tx_size; i++) { 
+            data_serial.write(serial_tx_buf[i]);
           }
-          wifi_last_rx_size = wifi_rx_size;
           wifi_rx_size = 0;
         }
       }
@@ -143,17 +213,11 @@ void loop() {
         Serial.print(serial_rx_size);
         Serial.println(" Bytes received on Serial");
         serial_EOT_timeout = 0;
-        // perform sanity check on rx buffer
-        len = serial_rx_buf[4] * 256 + serial_rx_buf[5] + 6;  // number of bytes we should have received
-        if (len == serial_rx_size) {      // correct number of bytes
-          client.write_P((const char *) &serial_rx_buf, serial_rx_size);  // write data to wifi client
+        len = rtu_to_tcp(serial_rx_buf, serial_rx_size, wifi_tx_buf, WIFI_BUF_SIZE);
+        if (len != 0) {      // no error
+          client.write_P((const char *) &wifi_tx_buf, len);  // write data to wifi client
           retry_attempts = 0;
         } else {                          // incorrect number of bytes
-          Serial.print("Error - expected ");
-          Serial.print(len);
-          Serial.print(" bytes, received ");
-          Serial.print(serial_rx_size);
-          Serial.println(" bytes");
           if (retry_attempts < MAX_RETRY) {   // max retires reached?
             Serial.println("Attempting retry, resending on serial port");
             retry();
@@ -203,7 +267,7 @@ void mylog(const char *sFmt, ...)
 
 static uint16_t modbus_crc16( const unsigned char *buf, unsigned int len )
 {
-	static const uint16_t table[256] = {
+	static const uint16_t crc_table[256] = {
 	0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
 	0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
 	0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40,
@@ -237,17 +301,17 @@ static uint16_t modbus_crc16( const unsigned char *buf, unsigned int len )
 	0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
 	0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040 };
 
-	uint8_t _xor = 0;
-	uint16_t crc = 0xFFFF;
+	uint8_t nTemp = 0;
+	uint16_t crcWord = 0xFFFF;
 
 	while( len-- )
 	{
-		_xor = (*buf++) ^ crc;
-		crc >>= 8;
-		crc ^= table[_xor];
+		nTemp = (*buf++) ^ crcWord;
+		crcWord >>= 8;
+		crcWord ^= crc_table[nTemp];
 	}
 
-	return crc;
+	return crcWord;
 }
 
 /*
